@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>عرض الصيدليات</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>قائمة الصيدليات</h1>
+    <p class="description">
+      لائحة الصيدليات التي تعتمد نظام تتبّع األدويةMediTrack
+      <br />
+      المصدر: وزارة الصحة
+    </p>
+
+    <div class="controls">
+      <input id="searchInput" type="text" placeholder="بحث في المنطقة، اسم الصيدلية، العنوان أو الهاتف..." />
+      <button id="resetBtn" type="button">إعادة تعيين</button>
+    </div>
+
+    <div class="stats">
+      <span>إجمالي السجلات: <strong id="totalCount">0</strong></span>
+      <span>المعروض: <strong id="shownCount">0</strong></span>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>المنطقة</th>
+            <th>اسم الصيدلية</th>
+            <th>العنوان</th>
+            <th>رقم الهاتف</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody">
+          <tr><td class="muted" colspan="4">جاري تحميل البيانات...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="toast" class="toast">✅ تم النسخ</div>
+  <button id="scrollTopBtn" class="scroll-top-btn" type="button" aria-label="الرجوع إلى الأعلى">↑</button>
+
+  <script>
+    const tableBody = document.getElementById("tableBody");
+    const searchInput = document.getElementById("searchInput");
+    const resetBtn = document.getElementById("resetBtn");
+    const totalCount = document.getElementById("totalCount");
+    const shownCount = document.getElementById("shownCount");
+    const toast = document.getElementById("toast");
+    const scrollTopBtn = document.getElementById("scrollTopBtn");
+
+    let rows = [];
+
+    function parseCSVLine(line) {
+      const result = [];
+      let value = "";
+      let inQuotes = false;
+
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') {
+          if (inQuotes && line[i + 1] === '"') {
+            value += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (char === "," && !inQuotes) {
+          result.push(value);
+          value = "";
+        } else {
+          value += char;
+        }
+      }
+
+      result.push(value);
+      return result;
+    }
+
+    function escapeHTML(text) {
+      return (text || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    let toastTimer;
+    function showToast(message) {
+      toast.textContent = message;
+      toast.style.display = "block";
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toast.style.display = "none";
+      }, 1300);
+    }
+
+    async function copyText(value) {
+      const text = (value || "").trim();
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast("✅ تم النسخ");
+      } catch {
+        showToast("❌ تعذّر النسخ");
+      }
+    }
+
+    function render(data) {
+      shownCount.textContent = data.length;
+
+      if (!data.length) {
+        tableBody.innerHTML = '<tr><td class="muted" colspan="4">لا توجد نتائج</td></tr>';
+        return;
+      }
+
+      tableBody.innerHTML = data
+        .map(
+          (row) => `
+          <tr>
+            <td data-label="المنطقة">${escapeHTML(row.District)}</td>
+            <td data-label="اسم الصيدلية">${escapeHTML(row["Pharmacy Name"])}</td>
+            <td data-label="العنوان">${escapeHTML(row.Address)}</td>
+            <td data-label="رقم الهاتف">${escapeHTML(row.Phone)}</td>
+          </tr>`
+        )
+        .join("");
+    }
+
+    function applySearch() {
+      const q = searchInput.value.trim().toLowerCase();
+      if (!q) {
+        render(rows);
+        return;
+      }
+
+      const filtered = rows.filter((r) =>
+        [r.District, r["Pharmacy Name"], r.Address, r.Phone]
+          .join(" ")
+          .toLowerCase()
+          .includes(q)
+      );
+
+      render(filtered);
+    }
+
+    async function loadCSV() {
+      try {
+        const res = await fetch("./pharmacies.csv", { cache: "no-store" });
+        if (!res.ok) throw new Error("تعذر قراءة الملف pharmacies.csv");
+
+        const text = await res.text();
+        const lines = text.split(/\r?\n/).filter((line) => line.trim());
+        if (!lines.length) throw new Error("الملف فارغ");
+
+        const headers = parseCSVLine(lines[0]).map((h) => h.trim());
+        const required = ["District", "Pharmacy Name", "Address", "Phone"];
+
+        const ok = required.every((col) => headers.includes(col));
+        if (!ok) throw new Error("ترتيب/أسماء الأعمدة في pharmacies.csv غير مطابق للمطلوب");
+
+        rows = lines.slice(1).map((line) => {
+          const values = parseCSVLine(line);
+          const obj = {};
+          headers.forEach((h, i) => {
+            obj[h] = (values[i] || "").trim();
+          });
+          return {
+            District: obj["District"] || "",
+            "Pharmacy Name": obj["Pharmacy Name"] || "",
+            Address: obj["Address"] || "",
+            Phone: obj["Phone"] || ""
+          };
+        });
+
+        totalCount.textContent = rows.length;
+        render(rows);
+      } catch (err) {
+        tableBody.innerHTML = `<tr><td class="muted" colspan="4">${escapeHTML(err.message)}</td></tr>`;
+        totalCount.textContent = "0";
+        shownCount.textContent = "0";
+      }
+    }
+
+    searchInput.addEventListener("input", applySearch);
+    resetBtn.addEventListener("click", () => {
+      searchInput.value = "";
+      render(rows);
+    });
+
+    tableBody.addEventListener("click", (event) => {
+      const cell = event.target.closest("td");
+      if (!cell || cell.classList.contains("muted")) return;
+      cell.classList.remove("tapped");
+      void cell.offsetWidth;
+      cell.classList.add("tapped");
+      copyText(cell.textContent);
+    });
+
+    function toggleScrollTopBtn() {
+      if (window.scrollY > 260) {
+        scrollTopBtn.classList.add("show");
+      } else {
+        scrollTopBtn.classList.remove("show");
+      }
+    }
+
+    window.addEventListener("scroll", toggleScrollTopBtn, { passive: true });
+    scrollTopBtn.addEventListener("click", () => {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+
+    loadCSV();
+  </script>
+</body>
+</html>
